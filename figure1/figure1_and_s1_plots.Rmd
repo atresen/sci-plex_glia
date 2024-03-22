@@ -1,0 +1,662 @@
+---
+title: "Code for plotting Figure 1"
+author: "Amy Tresenrider"
+date: "2024-03-18"
+output: html_document
+---
+
+```{r}
+
+suppressPackageStartupMessages({ 
+  library(tidyverse)
+  library(ggplot2)
+  library(tidyr)
+  library(viridis)
+  library(ggridges)
+  library(purrr)
+  library(monocle3)
+  library(RColorBrewer)
+  library(dplyr)
+  library(dirmult)
+  library(Seurat)
+  library(cowplot)
+  library(plotly)
+  library(gghighlight)
+  library(wesanderson)
+  library(VGAM)
+  library(data.table)
+  
+  # Pass TRUE if you want to see progress output on some of Monocle 3's operations
+  DelayedArray:::set_verbose_block_processing(TRUE)
+  # Passing a higher value will make some computations faster but use more memory. 
+  # Adjust with caution!
+  options(DelayedArray.block.size=1000e6)
+  
+})
+```
+
+```{r, load in the data}
+
+comb_cds = readRDS("GSM7670613_timecourse_pulse_filtered_annotated_221114.RDS")
+colors = fread("glia_colors.csv", header = F)
+
+# change immNeuron to NeuPre
+comb_cds$cell_type = gsub("immNeuron", "NeuPre", comb_cds$cell_type)
+comb_cds@colData
+
+comb_cds$cell_type = factor(comb_cds$cell_type, 
+                                     levels = c("MG", "ProL", "Transition", "NeuPre", "BP", 
+                                                "FibroL", "Microglia", "Astrocyte", "Unknown"))
+
+```
+
+
+### Main Figures
+```{r, fig 1b}
+
+f1b = plot_cells(comb_cds, color_cells_by = "cell_type", label_cell_groups = F, 
+                 show_trajectory_graph = F, cell_size = 0.2) + 
+    scale_color_manual(limits = colors$V1, values = colors$V2) +
+    theme_void() + 
+    theme(legend.position = "none",
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.background = element_rect(color = "black"),
+          text = element_text(size = 12))
+save_plot("Plots/fig1b.jpeg", f1b, base_width = 3, base_height = 3)
+
+```
+
+```{r, fig 1c}
+
+f1c = plot_cells(comb_cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=1.5,
+           show_trajectory_graph = F) +
+    theme_void() + monocle3:::monocle_theme_opts() +
+    theme(plot.background = element_rect(fill = "white", color = "white"),
+          text = element_text(size = 16))
+save_plot("Plots/fig1c.jpeg", f1c, base_width = 4, base_height = 3)
+
+```
+
+```{r, fig 1e}
+
+df = comb_cds@colData %>% as.data.frame() %>% filter(is.finite(pseudotime_score))
+df$ascl1_days = factor(df$ascl1_days, levels = c(5, 4, 3, 2, 1, 0))
+
+f1e = ggplot(df, aes(x = pseudotime_score, y = ascl1_days, 
+                    fill = stat(x))) + 
+  geom_density_ridges_gradient(scale = 1.5, rel_min_height = 0.005) +
+    geom_vline(xintercept = 16) +
+    facet_wrap(~experiment, nrow = 2) +
+  scale_fill_viridis_c(option = "C") +
+  monocle3:::monocle_theme_opts() +
+  theme(axis.title.y = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 14)) +
+  xlab("Pseudotime Score")
+save_plot("Plots/fig1e.jpeg", f1e, base_height = 6, base_width = 3)
+
+```
+
+```{r, fig 1f}
+
+# subset to only the MG-derived cells
+sub_cds = comb_cds[, comb_cds@colData$cell_type %in% c("MG", "ProL", "Transition", "NeuPre", "BP")]
+
+coldata_df = colData(sub_cds) %>% as.data.frame()
+
+group_df = coldata_df %>% group_by(treatment, cell_type, ascl1_days, experiment) %>% dplyr::count()
+
+sub_color = colors %>% filter(V1 %in% c("MG", "ProL", "Transition", "NeuPre", "BP"))
+
+f1f = ggplot(group_df, aes(x=ascl1_days, y=n, fill=cell_type)) + 
+    geom_bar(position="fill", stat="identity") +
+    facet_wrap(~experiment) +
+    scale_fill_manual(values = sub_color$V2, limits = sub_color$V1) +
+    monocle3:::monocle_theme_opts() + 
+    theme(legend.position = "none",
+          text = element_text(size = 18)) +
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Days exposed to Ascl1 OE") + ylab("Fraction Cell Type")
+save_plot("Plots/fig1f.jpeg", f1f, base_height = 4, base_width = 6)
+
+```
+ 
+```{r, fig 1g}
+
+genes_cds = comb_cds[rowData(comb_cds)$gene_short_name %in% c("Apoe", "Id3", "Nrxn3", "Vim")]
+tc_cds = genes_cds[, genes_cds@colData$experiment == "Timecourse"]
+
+f1g = plot_genes_in_pseudotime(tc_cds,
+                         color_cells_by="cell_type",
+                         min_expr=0.1, nrow = 2, ncol = 2) + 
+    scale_color_manual(limits= colors$V1, values = colors$V2) +
+    theme(legend.position = "none") +
+  xlab("Pseudotime Score") 
+save_plot("Plots/fig1g.jpeg", f1g, base_height = 3, base_width = 4.5) 
+ 
+```
+ 
+```{r, fig 1h}
+
+# load programs
+library(ComplexHeatmap)
+library(circlize)
+
+# find DEGs from pseudotime 10-20
+#cds_subset = comb_cds[, (comb_cds$pseudotime_score > 10 & comb_cds$pseudotime_score < 20)]
+
+#gene_fits = fit_models(cds_subset, model_formula_str = "~pseudotime_score")
+#fit_coefs = coefficient_table(gene_fits)
+#pseudotime_terms = fit_coefs %>% filter(term == "pseudotime_score", q_value < 0.05, estimate > 0.08 | estimate < -0.08) %>%
+#         select(gene_short_name, term, q_value, estimate) %>% arrange(q_value) %>% as.data.frame()
+
+#rowdata_df = rowData(comb_cds)
+#merge_df = merge(pseudotime_terms, rowdata_df, by = "gene_short_name")
+
+# select only the top 250 genes
+#top250 = merge_df %>% as.data.frame() %>% arrange(q_value) 
+#top250 = top250[1:250, ]
+
+# above is what was inputted to Dataset S1
+top250 = read.table("Dataset S1. Genes differentially expressed across pseudotime.csv", sep=",", header=TRUE)
+
+# subset the data
+top250_cds = comb_cds[rowData(comb_cds)$id %in% top250$id, ]
+genes = top250$GeneID
+
+# select only cells with a pseudotime score
+pseudo_cds = comb_cds[, !comb_cds@colData$pseudotime_score == "Inf"]
+
+# normalize counts for display on heatmap
+pt.matrix <- normalized_counts(pseudo_cds)[match(genes,rowData(pseudo_cds)$gene_short_name), order(pseudotime(pseudo_cds))]
+pt.matrix <- t(apply(pt.matrix,1,function(x){smooth.spline(x,df=3)$y}))
+pt.matrix <- t(apply(pt.matrix,1,function(x){(x-mean(x))/sd(x)}))
+rownames(pt.matrix) <- genes
+
+# these are the gene names we want to display on the figure
+genes_show = c("Notch2", "Clu", "Runx1", "Dkk3", "Vim",
+          "Map2", "Sox4", "Grik2", "Neurog2", "Rorb", "Nrg3", "Nrxn1", "Syt1", "Gabrb3", "Myt1", "Elavl3", 
+          "Id1", "Id3", "Apoe", "Bmp2", "Zfp36l1")
+
+# get the cell at a pseudotime of 16
+comb_df = comb_cds@colData %>% as.data.frame()
+comb_df %>% filter(pseudotime_score > 15.995 & pseudotime_score < 16.005) %>% arrange(pseudotime_score)
+
+# this is the cell that's right ~ 1 --> F05_E03_2P15-G01
+# need to get it's index position in pt.matrix
+
+# arrange cells by pseudotime and convert to df
+pseudo_df = pseudo_cds@colData %>% as.data.frame() 
+pseudo_df = pseudo_df %>% arrange(pseudotime_score)
+
+
+# make heatmap
+#K means with 3 groups
+
+png("Plots/fig1h.png",width=5,height=8,units="in",res=1200)
+
+set.seed(seed = 80)
+
+ht = Heatmap(
+  pt.matrix,
+  name                         = "z-score",
+  col                          = viridis(n = 100, option = "inferno"),
+  show_row_names               = FALSE,
+  show_row_dend                = FALSE, 
+  show_column_names            = FALSE,
+  row_names_gp                 = gpar(fontsize = 12),
+  km = 3,
+  row_title_rot                = 0,
+  cluster_rows                 = TRUE,
+  cluster_row_slices           = FALSE,
+  cluster_columns              = FALSE) + 
+  rowAnnotation(label = anno_mark(at = which(rownames(pt.matrix) %in% genes_show), 
+                                  labels = rownames(pt.matrix[which(rownames(pt.matrix) %in% genes_show), ])))
+ht = draw(ht)
+
+ decorate_heatmap_body("z-score", {
+   grid.lines(c(which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2], 
+                which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2]), 
+              c(0, 1), gp = gpar(lty = 2, lwd = 2))
+}, slice = 1 )
+decorate_heatmap_body("z-score", {
+   grid.lines(c(which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2], 
+                which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2]), 
+              c(0, 1), gp = gpar(lty = 2, lwd = 2))
+}, slice = 2 )
+decorate_heatmap_body("z-score", {
+   grid.lines(c(which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2], 
+                which(pseudo_df$cell == "F05_E03_2P15-G01",)/dim(pt.matrix)[2]), 
+              c(0, 1), gp = gpar(lty = 2, lwd = 2))
+}, slice = 3)
+
+gene_order_clusters = reshape2::melt(row_order(ht))
+
+dev.off()
+
+
+```
+
+
+### Supplemental Figures
+```{r, fig s1a-d}
+
+# load the data
+tc_cds = readRDS("GSM7670613_timecourse-glia_cds_with_hash_data.RDS")
+
+#knee plot
+breaks_for_plot_x = c(1, 10, 100, 1000, 10000, 100000)
+breaks_for_plot_y = c(1, 10, 30, 100, 300, 1000, 3000, 10000, 100000)
+
+s1a = tc_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, n.umi) %>%
+  arrange(desc(n.umi)) %>%
+  mutate(rank = dplyr::row_number()) %>%
+  ggplot() +
+  geom_line(aes(x = rank,
+                y = n.umi)) +
+  scale_x_log10(breaks = breaks_for_plot_x) +
+  scale_y_log10(breaks = breaks_for_plot_y) +
+  theme_classic() +
+  geom_hline(yintercept = 500, 
+             color = "red") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)) + 
+  xlab("Number of cells") +
+  ylab("RNA UMIs")
+
+s1b = tc_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, n.umi) %>%
+  ggplot() +
+  geom_histogram(aes(log10(n.umi)), bins = 100) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  scale_y_continuous(expand = c(0,0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Number of UMIs (log10)") +
+  ylab("Count") +
+  geom_vline(xintercept = log10(500), col = "red")
+umi_cds = tc_cds[, tc_cds@colData$n.umi > 500]
+
+s1c = umi_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, top_to_second_best_ratio) %>%
+  ggplot() +
+  geom_histogram(aes(log2(top_to_second_best_ratio)), bins = 200) +
+  scale_x_continuous(limits = c(0,12), expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Top to second best ratio (log2)") + ylab("Cell Count") +
+  geom_vline(xintercept = log2(4), col = "red")
+
+s1d = umi_cds@colData %>% as.data.frame() %>%
+  mutate(hash_info = case_when(top_to_second_best_ratio <= 4 ~ "<= 4",
+                               (top_to_second_best_ratio > 4 & top_to_second_best_ratio < Inf) ~ "> 4",
+                               top_to_second_best_ratio == Inf ~ "infinite",
+                               is.na(top_to_second_best_ratio) ~ " no hash")) %>%
+  group_by(hash_info) %>%
+  dplyr::count() %>%
+  ggplot(aes(x = hash_info, y = n)) +
+  geom_bar(stat = "identity") +
+  monocle3:::monocle_theme_opts() +
+  scale_y_continuous(expand = c(0, 0)) +
+  xlab("Top to second best ratio") + ylab("Cell Count")
+
+pg = plot_grid(s1a, s1b, s1c, s1d, rel_widths = c(1, 1.25, 1), nrow = 1)
+save_plot("Plots/figS1a-d.jpeg", pg, base_height = 3, base_width = 15)
+
+```
+
+```{r, fig S1e-h}
+
+# load the data
+pulse_cds = readRDS("GSM7670614_pulse-glia_cds_with_hash_data.RDS")
+
+#knee plot
+breaks_for_plot_x = c(1, 10, 100, 1000, 10000, 100000)
+breaks_for_plot_y = c(1, 10, 30, 100, 300, 1000, 3000, 10000, 100000)
+
+s1e = pulse_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, n.umi) %>%
+  arrange(desc(n.umi)) %>%
+  mutate(rank = dplyr::row_number()) %>%
+  ggplot() +
+  geom_line(aes(x = rank,
+                y = n.umi)) +
+  scale_x_log10(breaks = breaks_for_plot_x) +
+  scale_y_log10(breaks = breaks_for_plot_y) +
+  theme_classic() +
+  geom_hline(yintercept = 500, 
+             color = "red") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)) + 
+  xlab("Number of cells") +
+  ylab("RNA UMIs")
+
+s1f = pulse_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, n.umi) %>%
+  ggplot() +
+  geom_histogram(aes(log10(n.umi)), bins = 100) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  scale_y_continuous(expand = c(0,0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Number of UMIs (log10)") +
+  ylab("Count") +
+  geom_vline(xintercept = log10(500), col = "red")
+umi_cds = pulse_cds[, pulse_cds@colData$n.umi > 500]
+
+s1g = umi_cds@colData %>% as.data.frame() %>%
+  dplyr::select(cell, top_to_second_best_ratio) %>%
+  ggplot() +
+  geom_histogram(aes(log2(top_to_second_best_ratio)), bins = 200) +
+  scale_x_continuous(limits = c(0,12), expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Top to second best ratio (log2)") + ylab("Cell Count") +
+  geom_vline(xintercept = log2(5), col = "red")
+
+s1h = umi_cds@colData %>% as.data.frame() %>%
+  mutate(hash_info = case_when(top_to_second_best_ratio <= 5 ~ "<= 5",
+                               (top_to_second_best_ratio > 5 & top_to_second_best_ratio < Inf) ~ "> 5",
+                               top_to_second_best_ratio == Inf ~ "infinite",
+                               is.na(top_to_second_best_ratio) ~ " no hash")) %>%
+  group_by(hash_info) %>%
+  dplyr::count() %>%
+  ggplot(aes(x = hash_info, y = n)) +
+  geom_bar(stat = "identity") +
+  monocle3:::monocle_theme_opts() +
+  scale_y_continuous(expand = c(0, 0)) +
+  xlab("Top to second best ratio") + ylab("Cell Count")
+
+pg = plot_grid(s1e, s1f, s1g, s1h, rel_widths = c(1, 1.25, 1), nrow = 1)
+save_plot("Plots/figS1e-h.jpeg", pg, base_height = 3, base_width = 15)
+
+```
+
+```{r, fig S1i}
+
+s1i = comb_cds@colData %>% as.data.frame() %>%
+  group_by(experiment) %>%
+  ggplot(aes(x = factor(experiment, levels = c("Timecourse", "Pulse")), 
+                        y = n.umi, fill = experiment)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  scale_y_continuous(trans = "log10") +
+  monocle3:::monocle_theme_opts() +
+  scale_fill_manual(values = c("orange", "#008080")) +
+  theme(axis.title.x = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 16)) +
+  ylab("UMIs per Cell") 
+s1i
+
+save_plot("Plots/figS1i.jpeg", s1i, base_height = 4, base_width = 3)
+
+```
+
+```{r, fig S1j}
+
+comb_cds = detect_genes(comb_cds) 
+s1j = comb_cds@colData %>% as.data.frame() %>%
+  group_by(treatment, top_oligo) %>%
+  ggplot(aes(x = factor(experiment, levels = c("Timecourse", "Pulse")), 
+                        y = num_genes_expressed, fill = experiment)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  scale_y_continuous(trans = "log10") +
+  monocle3:::monocle_theme_opts() +
+  scale_fill_manual(values = c("orange", "#008080")) +
+  theme(axis.title.x = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 16)) +
+  ylab("Features per Cell") 
+s1j
+
+save_plot("Plots/figS1j.jpeg", s1j, base_width = 3, base_height = 4)
+
+```
+
+```{r, fig S1k}
+
+coldata_df = comb_cds@colData %>% as.data.frame()
+
+to_count_df = coldata_df %>%
+  group_by(experiment, top_oligo) %>%
+  summarize(n = n()) 
+#to_count_df %>% summarise(median = median(n))
+
+summ = to_count_df %>%
+  summarize(n = n())
+max = to_count_df %>%
+  summarize(max = max(n))
+min = to_count_df %>%
+  ungroup() %>%
+  summarise(mean = median(n)) 
+
+s1k = coldata_df %>%
+  filter(top_oligo %in% to_count_df$top_oligo) %>%
+  group_by(top_oligo, experiment) %>%
+  dplyr::count() %>%
+  ggplot(aes(x = factor(experiment, levels = c("Timecourse", "Pulse")), 
+                        y = n, fill = experiment)) +
+  geom_violin() +
+  geom_dotplot(binaxis = "y",
+               stackdir = "center",
+               dotsize = 0.5) +
+  #geom_text(aes(label = n), data = summ) +
+  geom_text(data = summ,
+    aes(label = n, y = 100 + max$max),
+    position = position_dodge(0.9),
+    vjust = 0) +
+  monocle3:::monocle_theme_opts() +
+  scale_fill_manual(values = c("orange", "#008080")) +
+  theme(axis.text.x = element_text(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 16)) +
+  ylab("Cells per well") 
+
+s1k
+save_plot("Plots/figS1k.jpeg", s1k, base_height = 4, base_width = 3)
+
+```
+
+```{r, fig S1l-m}
+
+comb_cds$cell_type = factor(comb_cds$cell_type, 
+                                     levels = c("MG", "ProL", "Transition", "NeuPre", "BP", 
+                                                "FibroL", "Microglia", "Astrocyte", "Unknown")  )
+
+# all cell types
+genes = c("Ascl1", # shows that we are activating Ascl1 in cells
+          "Mki67", "Top2a", # proliferating
+          "Vsx2", "Rax", # marks cells that we want to carry forward
+          "Pax2", "Gfap", # astrocytes
+          "Tmem119", "P2ry12", "Spp1", # microglia
+          "Col4a1", "Lox", "Fn1" # unknown fibroblasts??
+                               )
+s1l = plot_genes_by_group(comb_cds,
+                    genes,
+                    group_cells_by="cell_type",
+                    ordering_type="none",
+                    max.size=10,
+                    norm_method = "log",
+                    lower_threshold = 0.0001) +
+  scale_color_gradient(low = "#B2DCC1", high = "#26695E") +
+  theme(axis.title = element_blank(),
+        text = element_text(size = 16)) 
+
+# mg-derived cell types
+genes = c("Aqp4", # mg
+          "Ascl1", "Hes6", "Dll1", "Dll3", # shows that we are activating Ascl1 in cells
+          "Gap43", "Elavl3", "Snap25", "Dcx", # reprogramming
+          "Otx2", "Cabp5", "Grm6", "Trpm1" # most mature neuron
+          )
+s1m = plot_genes_by_group(comb_cds[, comb_cds$cell_type %in% c("ProL", "Transition", "MG", "NeuPre", "BP")],
+                    genes,
+                    group_cells_by="cell_type",
+                    ordering_type="none",
+                    max.size=10,
+                    norm_method = "log",
+                    lower_threshold = 0.0001) +
+  scale_color_gradient(low = "#B2DCC1", high = "#26695E") +
+  theme(axis.title = element_blank(),
+        text = element_text(size = 16)) 
+
+pg = plot_grid(s1l, s1m, rel_widths = c(1.4, 1))
+
+save_plot(pg, filename = "Plots/figS1l-m.jpeg", base_height = 5, base_width = 10)
+
+```
+
+```{r, fig S1n}
+
+s1n = plot_cells(comb_cds, genes = c("Cabp5", "Otx2", # most mature neuron
+                               "Ascl1", # shows that we are activating Ascl1 in cells
+                               "Aqp4", "Rlbp1", # mg
+                               "Mki67", "Top2a", # proliferating
+                               "Vsx2", "Rax", # marks cells that we want to carry forward
+                               "Gap43", "Snap25", "Dcx", # reprogramming
+                               "Pax2", "Gfap", # astrocytes
+                               "Tmem119", "P2ry12", "Spp1", # microglia
+                               "Col4a1", "Lox", "Fn1" # unknown fibroblasts??
+                               ), 
+           show_trajectory_graph = F, label_cell_groups = F,
+           scale_to_range = T, cell_size = 0.5) +
+  theme_void() + monocle3:::monocle_theme_opts() +
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        legend.position = "bottom")
+
+save_plot("Plots/figS1n.jpeg", s1n, base_width = 7.5, base_height = 6)
+
+# in the figure the plot was cut and pasted to make the gene display more horizontal
+
+```
+
+```{r, fig S1o}
+
+coldata_df = colData(comb_cds) %>% as.data.frame()
+
+group_df = coldata_df %>% group_by(treatment, cell_type, ascl1_days, experiment) %>% dplyr::count()
+
+s1o = ggplot(group_df, aes(x=ascl1_days, y=n, fill=cell_type)) + 
+    geom_bar(position="fill", stat="identity") +
+    facet_wrap(~experiment) +
+    scale_fill_manual(values = colors$V2, limits = colors$V1) +
+    monocle3:::monocle_theme_opts() + 
+    theme(legend.position = "none",
+          text = element_text(size = 18)) +
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Days exposed to Ascl1 OE") + ylab("Fraction Cell Type")
+
+save_plot("Plots/figS1o.jpeg", s1o)
+
+```
+
+```{r, fig S1p}
+
+s1p = plot_cells(comb_cds, color_cells_by = "cell_type", label_cell_groups = F, show_trajectory_graph = F) + 
+    facet_grid(rows = vars(experiment), cols = vars(ascl1_days), switch = "y") +
+    scale_color_manual(limits = colors$V1, values = colors$V2) +
+    theme_void() + 
+    theme(legend.position = "none",
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.background = element_rect(color = "black"),
+          text = element_text(size = 12),
+          strip.text.y.left = element_text(angle = 90))
+
+save_plot("Plots/figS1p.jpeg", s1p, base_width = 6, base_height = 2)
+
+```
+
+```{r, fig S1q}
+
+coldata_df = colData(sub_cds) %>% as.data.frame()
+group_df = coldata_df %>% group_by(treatment, cell_type, ascl1_days, experiment) %>% dplyr::count()
+sub_color = colors %>% filter(V1 %in% c("MG", "ProL", "Transition", "NeuPre", "BP"))
+
+cells_per_cond_df = coldata_df %>% group_by(treatment, ascl1_days, experiment) %>% dplyr::count()
+
+cells_per_cond = rep(cells_per_cond_df$n, each=5)
+
+group_df$total_cells = cells_per_cond
+
+group_df$fct_cell_type = group_df$n / group_df$total_cells
+
+
+plot_rel_to_tp = function(df, celltype, ref_timepoint) {
+    ref_timepoint = as.character(ref_timepoint)
+    ct_df = df %>% filter(cell_type == celltype)
+    
+    ct_tp = ct_df %>% filter(ascl1_days == ref_timepoint)
+    xx = ct_tp$fct_cell_type
+    yy = dim(ct_df %>% filter(experiment == "Pulse"))[1]
+    ct_df$rel_to_5 = ct_df$fct_cell_type
+    
+    sub_color = colors %>% filter(V1 %in% celltype)
+    p = ggplot(ct_df, aes(x=ascl1_days, y=rel_to_5, fill=cell_type)) + 
+        geom_bar(stat="identity") +
+        facet_wrap(~experiment) +
+        scale_fill_manual(values = sub_color$V2, limits = sub_color$V1) +
+        monocle3:::monocle_theme_opts() + 
+        theme(legend.position = "none",
+              text = element_text(size = 9)) +
+      scale_y_continuous(expand = c(0,0)) +
+      xlab("Days exposed to Ascl1") + ylab(paste0("Fraction Cell Type", ref_timepoint)) + ggtitle(celltype)
+    save_plot(paste0("Plots/barplot_", celltype, "_relative_to_timepoint_", ref_timepoint, ".jpg"), p)
+    return(p)
+}
+
+p1 = plot_rel_to_tp(group_df, "Transition", 5)
+p2 = plot_rel_to_tp(group_df, "NeuPre", 5)
+p3 = plot_rel_to_tp(group_df, "ProL", 0)
+p4 = plot_rel_to_tp(group_df, "MG", 0)
+    
+s1q = plot_grid(p4, p3, p1, p2, nrow = 1)
+save_plot("Plots/figS1q.jpg", s1q, base_height = 2, base_width = 8)
+
+```
+
+```{r, fig S1r fig.width=4, fig.height=4} 
+
+dev.new(width=4, height=4)
+
+df_pulse = df %>% filter(experiment == "Pulse" & 
+                           #pseudotime_score > 10 & 
+                           #pseudotime_score < 20 &
+                           ascl1_days %in% c(1, 2, 3, 4))
+
+d = density(df_pulse$pseudotime_score)
+
+plot(d, main = "Pulse") 
+v <- optimize(approxfun(d$x,d$y),interval=c(10,20))$minimum
+abline(v=v, col="blue")
+
+
+df_tc = df %>% filter(experiment == "Timecourse" & 
+                           #pseudotime_score > 10 & 
+                           #pseudotime_score < 20 &
+                           ascl1_days %in% c(1, 2, 3, 4))
+d = density(df_tc$pseudotime_score)
+plot(d, main = "Timecourse") 
+abline(v=v, col="blue")
+
+# images below were copy and pasted into figure
+ 
+```
+
+```{r, fig S1s}
+
+genes_cds = comb_cds[rowData(comb_cds)$gene_short_name %in% c("Ascl1")]
+
+tc_cds = genes_cds[, genes_cds@colData$experiment == "Timecourse"]
+
+s1s = plot_genes_in_pseudotime(tc_cds,
+                         color_cells_by="cell_type",
+                         min_expr=0.1) + 
+    scale_color_manual(limits= colors$V1, values = colors$V2) +
+    theme(legend.position = "none")
+save_plot("Plots/figS1s.jpeg", s1s, base_height = 2, base_width = 2.25)
+
+```
+
+

@@ -1,0 +1,429 @@
+---
+title: "figure3_and_s3_plots"
+author: "Amy Tresenrider"
+date: "2024-03-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+suppressPackageStartupMessages({ 
+  library(tidyverse)
+  library(ggplot2)
+  library(tidyr)
+  library(viridis)
+  library(ggridges)
+  library(purrr)
+  library(monocle3)
+  library(RColorBrewer)
+  library(dplyr)
+  library(dirmult)
+  library(Seurat)
+  library(cowplot)
+  library(vioplot)
+  library(ggrepel)
+  library(gghighlight)
+  library(data.table)
+  library(Matrix)
+  
+  # Pass TRUE if you want to see progress output on some of Monocle 3's operations
+  DelayedArray:::set_verbose_block_processing(TRUE)
+  # Passing a higher value will make some computations faster but use more memory. 
+  # Adjust with caution!
+  options(DelayedArray.block.size=1000e6)
+  # Set a seed to make umap and other non-deterministic steps consistent
+  set.seed(seed = 42)
+  
+
+})
+```
+
+```{r, load in the data}
+
+cds = readRDS("GSM7670616_in_vivo_tc_filtered_annotated_230411.RDS")
+
+# 5d data from Todd et al. Cell Reports (2020) GSE161394
+expression_5d = readMM("ANT_2d_filtered_feature_bc_matrix/matrix.mtx.gz")
+cell_5d = read.table("ANT_2d_filtered_feature_bc_matrix/barcodes.tsv.gz", 
+                     header = FALSE, col.names = "barcode")
+gene_5d = read.table("ANT_2d_filtered_feature_bc_matrix/features.tsv.gz", 
+                     header = FALSE, col.names = c("geneID", "gene_short_name", 
+                                                   "gene", "expression"))
+
+dam_5d_cds = new_cell_data_set(expression_data = expression_5d,
+                               cell_metadata = cell_5d,
+                               gene_metadata = gene_5d)
+
+# 9d data from Todd et al. Cell Reports (2020) GSE161394
+expression_9d = readMM("ANT_7d_filtered_feature_bc_matrix/matrix.mtx.gz")
+cell_9d = read.table("ANT_7d_filtered_feature_bc_matrix/barcodes.tsv.gz", 
+                     header = FALSE, col.names = "barcode")
+gene_9d = read.table("ANT_7d_filtered_feature_bc_matrix/features.tsv.gz", 
+                     header = FALSE, col.names = c("geneID", "gene_short_name", 
+                                                   "gene", "expression"))
+
+dam_9d_cds = new_cell_data_set(expression_data = expression_9d,
+                               cell_metadata = cell_9d,
+                               gene_metadata = gene_9d)
+
+# 21d in our GEO accession 
+expression_21d = readMM("GSM7670616_d21-post-injury_filtered_feature_bc_matrix/GSM7670616_d21-post-injury_matrix.mtx")
+cell_21d = read.table("GSM7670616_d21-post-injury_filtered_feature_bc_matrix/GSM7670616_d21-post-injury_barcodes.tsv.gz", 
+                      header = FALSE, col.names = "barcode")
+gene_21d = read.table("GSM7670616_d21-post-injury_filtered_feature_bc_matrix/GSM7670616_d21-post-injury_features.tsv", 
+                      header = FALSE, col.names = c("geneID", "gene_short_name", 
+                                                   "gene", "expression"))
+
+dam_21d_cds = new_cell_data_set(expression_data = expression_21d,
+                               cell_metadata = cell_21d,
+                               gene_metadata = gene_21d)
+
+# info about ascl1 exposure
+dam_5d_cds$day_after_exposure = 5
+dam_9d_cds$day_after_exposure = 9
+dam_21d_cds$day_after_exposure = 21
+
+# get the umi counts
+dam_5d_cds$n.umi = colSums(assay(dam_5d_cds))
+dam_9d_cds$n.umi = colSums(assay(dam_9d_cds))
+dam_21d_cds$n.umi = colSums(assay(dam_21d_cds))
+
+# color scheme
+colors = fread("glia_colors_230403.csv", header = F)
+
+```
+
+
+### Main Figures
+```{r, fig 3c}
+
+cds$cell_type = factor(cds$cell_type,
+                       levels = c("MG", "Transition", "NeuPre", "Bipolar",
+                                  "Cones", "Rods and Proliferating Cells", 
+                                  "Astrocyte","Microglia"))
+
+genes = c("Aqp4", "Rlbp1", # mg
+          "Ascl1", # shows that we are activating Ascl1 in cells
+          "Snap25", "Cabp5", # reprogramming
+          "Syt1", "Otx2", "Nrxn3", # bipolar
+          "Arr3", "Rho", "Nrl", # photoreceptors
+          #"Vsx2", "Rax", # marks cells that we want to carry forward
+          "Pax2", "Gfap", # astrocytes
+          "Tmem119", "P2ry12", "Spp1", # microglia
+          "Mki67", "Top2a" # proliferating
+                               )
+
+pg1 = plot_genes_by_group(cds,
+                    genes,
+                    group_cells_by="cell_type",
+                    ordering_type="none",
+                    max.size=10,
+                    norm_method = "log",
+                    lower_threshold = 0.0001) +
+  scale_color_gradient(low = "#B2DCC1", high = "#26695E") +
+  theme(axis.title = element_blank(),
+        text = element_text(size = 16),
+        legend.position = "right") 
+
+save_plot(pg1, filename = "Plots/f3c_combined_dot_plot_genes.jpeg", base_height = 6, base_width = 5)
+
+```
+
+```{r, fig 3d}
+
+p2 = plot_cells(cds, color_cells_by = "cell_type", label_cell_groups = F, show_trajectory_graph = F) + 
+    scale_color_manual(limits = colors$V1, values = colors$V3) +
+    theme_void() + 
+    theme(legend.position = "none",
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.background = element_rect(color = "black"),
+          text = element_text(size = 12))
+save_plot("Plots/f3d_tc_in-vivo_umaps.jpeg", p2, base_width = 2, base_height = 2)
+
+```
+
+```{r, fig 3e}
+
+sub_cds = cds[, cds@colData$cell_type %in% c("MG", "Transition", "NeuPre", "Bipolar")]
+
+coldata_df = colData(sub_cds) %>% as.data.frame()
+group_df = coldata_df %>% group_by(cell_type, day_after_exposure) %>% dplyr::count()
+sub_color = colors %>% filter(V1 %in% c("MG", "Transition", "NeuPre", "Bipolar"))
+
+p = ggplot(group_df, aes(x=day_after_exposure, y=n, fill=cell_type)) + 
+    geom_bar(position="fill", stat="identity") +
+    scale_fill_manual(values = sub_color$V3, limits = sub_color$V1) +
+    monocle3:::monocle_theme_opts() + 
+    theme(legend.position = "none",
+          text = element_text(size = 18)) +
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Days exposed to Ascl1 OE") + ylab("Fraction Cell Type")
+save_plot("Plots/f3e_sub_barplot_celltypes.jpeg", p, base_height = 4, base_width = 4)
+
+```
+
+
+```{r, fig 3f}
+
+hm_genes = c(#DBZ Targets (Notch)
+             "Notch3", "Aph1a", "Notch1", "Efnb2", "Lfng", "Notch2",  
+             "Hes1", "Maml1", "Dll1", "Hes6", "Rbpj", "Dll3", "Mfng",
+             "Jag1",  "Nedd4", "Aplp1", "Aplp2", "Mib1", "App", "Numb", 
+             # RepSox Targets (TGFB)
+             "Tgfbr2", "Gadd45b", "Smad2", "Smad4", "Tgfbr1", "Smad3", "Mapk8",  
+             # WH-4-023 Targets (Lck/Src)
+             "Sik2", "Src", "Lck",  "Sik1", 
+             # Metformin Targets (AMPK)
+             "Prkca", "Srebf1", "Crtc2", "Stk11", "Gpd2", "Pou2f1", "Prkaa1",
+              "Mtor",
+              "Slc29a4",   "Crebbp",  "Tsc1", "Tsc2", "Prkaa2", "Hdac5",
+             # DMH-1 Targets (BMP)
+             "Bmp1",  "Map2k3", "Smad5", "Smad1",  "Mapk8",
+             "Map3k7","Mapk14",  "Smad9", "Acvr1"
+             )
+
+
+# subset the data
+hm_cds = cds[rowData(cds)$gene_short_name %in% hm_genes, ]
+
+
+# load programs
+library(ComplexHeatmap)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(circlize)
+library(monocle3)
+
+
+cds = learn_graph(cds)
+cds = order_cells(cds)
+cds$pseudotime_score = pseudotime(cds)
+
+pseudo_cds = cds[, !cds@colData$pseudotime_score == "Inf"]
+
+pt.matrix <- normalized_counts(pseudo_cds)[match(hm_genes,rowData(pseudo_cds)$gene_short_name), order(pseudotime(pseudo_cds))]
+
+
+pt.matrix <- t(apply(pt.matrix,1,function(x){smooth.spline(x,df=3)$y}))
+pt.matrix <- t(apply(pt.matrix,1,function(x){(x-mean(x))/sd(x)}))
+rownames(pt.matrix) <- hm_genes
+
+png("Plots/f3f_heatmap.png",width=6,height=12,units="in",res=1200)
+
+ha = HeatmapAnnotation(bar = c(rep("Notch", times = 20), rep("RepSox", times = 7), rep("WH-4-023", times = 4), 
+                               rep("Metformin", times = 14), rep("DMH-1", times = 9)),
+                       col = list(bar = c("Notch" = "red", "RepSox" = "green", "WH-4-023" = "blue",
+                                          "Metformin" = "yellow", "DMH-1" = "purple")))
+Heatmap(
+  pt.matrix,
+  name                         = "z-score",
+  col                          = viridis(n = 100, option = "inferno"),
+  show_row_names               = TRUE,
+  show_row_dend                = FALSE, 
+  show_column_names            = FALSE,
+  row_names_gp                 = gpar(fontsize = 15),
+  km = 1,
+  row_title_rot                = 0,
+  cluster_rows                 = FALSE,
+  cluster_row_slices           = FALSE,
+  cluster_columns              = FALSE,
+  )
+
+dev.off()
+
+```
+ 
+
+
+### Supplemental Figures
+```{r, fig s3a-b}
+
+breaks_for_plot_x = c(1, 10, 100, 1000, 10000, 100000)
+breaks_for_plot_y = c(1, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
+
+# RNA knee plot
+p = dam_5d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  arrange(desc(n.umi)) %>%
+  mutate(rank = dplyr::row_number()) %>%
+  ggplot() +
+  geom_line(aes(x = rank,
+                y = n.umi)) +
+  scale_x_log10(breaks = breaks_for_plot_x) +
+  scale_y_log10(breaks = breaks_for_plot_y) +
+  theme_classic() +
+  geom_hline(yintercept = 2500, 
+             color = "red") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)) + 
+  xlab("Number of cells") +
+  ylab("RNA UMIs")
+p
+
+p1 = dam_5d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  ggplot() +
+  geom_histogram(aes(log10(n.umi)), bins = 100) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  scale_y_continuous(expand = c(0,0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Number of UMIs (log10)") +
+  ylab("Count") +
+  geom_vline(xintercept = log10(2500), col = "red")
+
+p1
+
+pg = plot_grid(p, p1)
+
+save_plot("Plots/S3a-b_numi_qc.jpeg", pg, base_width = 5, base_height = 2.5)
+
+```
+### need to add the data for this to the geo upload
+```{r, fig s3c-d}
+
+breaks_for_plot_x = c(1, 10, 100, 1000, 10000, 100000)
+breaks_for_plot_y = c(1, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
+
+# RNA knee plot
+p = dam_9d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  arrange(desc(n.umi)) %>%
+  mutate(rank = dplyr::row_number()) %>%
+  ggplot() +
+  geom_line(aes(x = rank,
+                y = n.umi)) +
+  scale_x_log10(breaks = breaks_for_plot_x) +
+  scale_y_log10(breaks = breaks_for_plot_y) +
+  theme_classic() +
+  geom_hline(yintercept = 3000, 
+             color = "red") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)) + 
+  xlab("Number of cells") +
+  ylab("RNA UMIs")
+
+p1 = dam_9d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  ggplot() +
+  geom_histogram(aes(log10(n.umi)), bins = 100) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  scale_y_continuous(expand = c(0,0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Number of UMIs (log10)") +
+  ylab("Count") +
+  geom_vline(xintercept = log10(3000), col = "red")
+
+pg = plot_grid(p, p1)
+
+save_plot("Plots/S3c-d_numi_qc.jpeg", pg, base_width = 5, base_height = 2.5)
+
+```
+
+```{r, fig S3e-f}
+
+breaks_for_plot_x = c(1, 10, 100, 1000, 10000, 100000)
+breaks_for_plot_y = c(1, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
+
+# RNA knee plot
+p = dam_21d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  arrange(desc(n.umi)) %>%
+  mutate(rank = dplyr::row_number()) %>%
+  ggplot() +
+  geom_line(aes(x = rank,
+                y = n.umi)) +
+  scale_x_log10(breaks = breaks_for_plot_x) +
+  scale_y_log10(breaks = breaks_for_plot_y) +
+  theme_classic() +
+  geom_hline(yintercept = 2500, 
+             color = "red") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)) + 
+  xlab("Number of cells") +
+  ylab("RNA UMIs")
+
+p1 = dam_21d_cds@colData %>% as.data.frame() %>%
+  dplyr::select(barcode, n.umi) %>%
+  ggplot() +
+  geom_histogram(aes(log10(n.umi)), bins = 100) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  scale_y_continuous(expand = c(0,0)) +
+  monocle3:::monocle_theme_opts() +
+  xlab("Number of UMIs (log10)") +
+  ylab("Count") +
+  geom_vline(xintercept = log10(2500), col = "red")
+
+pg = plot_grid(p, p1)
+
+save_plot("Plots/S3e-f_numi_qc.jpeg", pg, base_width = 5, base_height = 2.5)
+
+```
+
+```{r, fig S3g}
+
+p = plot_cells(cds, genes = c("Cabp5", "Crx", # most mature neuron
+                              "Rho", # rods
+                              "Arr3", # cones
+                              "Ascl1", # we are activating Ascl1 in cells
+                              "Aqp4", "Rlbp1", # mg
+                              "Vsx2", "Rax", # cells to carry forward
+                              "Gap43", "Snap25", # reprogramming
+                              "Pax2", "Gfap", # astrocytes
+                              "Tmem119", "P2ry12", "Spp1" # microglia
+                               ), 
+           show_trajectory_graph = F, label_cell_groups = F,
+           scale_to_range = T, cell_size = 0.5) +
+  theme_void() + monocle3:::monocle_theme_opts() +
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        legend.position = "bottom")
+save_plot("Plots/S3g_unfiltered_expression_plots.jpeg", p, base_width = 7.5, base_height = 6)
+
+```
+
+```{r, fig S3h}
+
+p2 = plot_cells(cds, color_cells_by = "cell_type", label_cell_groups = F, show_trajectory_graph = F) + 
+    facet_wrap(~day_after_exposure, ncol = 1) +
+    scale_color_manual(limits = colors$V1, values = colors$V3) +
+    theme_void() + 
+    theme(legend.position = "none",
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.background = element_rect(color = "black"),
+          text = element_text(size = 12))
+save_plot("Plots/S3h_tc_in-vivo_faceted_umaps.jpeg", p2, base_width = 2.25, base_height = 5)
+
+```
+
+```{r, fig S3i}
+
+p3 = plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=1.5,
+           show_trajectory_graph = F) +
+    theme_void() + monocle3:::monocle_theme_opts() +
+    theme(plot.background = element_rect(fill = "white", color = "white"),
+          text = element_text(size = 16))
+save_plot("Plots/S3i_tc_in-vivo_pseudotime_umap.jpeg", p3, base_width = 4, base_height = 2.68)
+
+```
+
+```{r, fig S3j}
+
+df = cds@colData %>% as.data.frame() %>% filter(is.finite(pseudotime_score))
+df$day_after_exposure = factor(df$day_after_exposure, levels = c(5, 9, 21))
+
+gg = ggplot(df, aes(x = pseudotime_score, y = day_after_exposure, 
+                    fill = stat(x))) + 
+  geom_density_ridges_gradient(scale = 1.5, rel_min_height = 0.005) +
+  scale_fill_viridis_c(option = "C") +
+  monocle3:::monocle_theme_opts() +
+  theme(axis.title.y = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 16)) +
+  xlab("Pseudotime Score")
+save_plot("Plots/S3j_tc_in-vivo_pseudotime_hist.jpeg", gg, base_height = 4, base_width = 6)
+
+```
